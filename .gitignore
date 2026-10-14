@@ -1,8 +1,17 @@
 # Ignore built binaries
 bin/
+out/
 
 # Ignore coverage reports
 coverage.out
 
 # Ignore configuration files
-*.toml
+config.toml
+
+# Ignore vim buffer files
+*.swp
+*.swo
+
+# Ignore old or backed-up files
+*.old
+*.bak

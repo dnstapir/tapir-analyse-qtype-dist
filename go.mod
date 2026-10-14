@@ -1,6 +1,6 @@
 module github.com/dnstapir/tapir-analyse-qtype-dist
 
-go 1.27.1
+go 1.27.0
 
 require (
 	github.com/dnstapir/tapir-analyse-lib v0.0.0-20260414104340-0e06dc6a4691

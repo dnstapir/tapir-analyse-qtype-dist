@@ -2,31 +2,37 @@ package app
 
 import (
 	"context"
-	"math"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/dnstapir/tapir-analyse-lib/common"
+	"github.com/dnstapir/tapir-analyse-lib/libtapir"
 )
 
 const c_N_HANDLERS = 3
 const c_NATS_DELIM = common.NATS_DELIM
 
+// TODO: add private bucket suffix to conf/apphandle?
 type Conf struct {
-	Debug      bool `toml:"debug"`
-	Interval   int  `toml:"interval"`
-	AnalystID  string
-	Log        common.Logger
-	NatsHandle nats
+	Debug      			bool 		`toml:"debug"`
+	Interval   			int  		`toml:"interval"`
+	IgnoreSuffixes      []string	`toml:"ignore_suffixes"`
+	IncludeInvalidETLDs	bool        `toml:"include_invalid_etlds"`
+	AnalystID  			string
+	Log        			common.Logger
+	NatsHandle 			nats
 }
 
 type appHandle struct {
-	id          string
-	observation string
-	log         common.Logger
-	natsHandle  nats
-	ticker      *time.Ticker
-	exitCh      chan<- common.Exit
+	id          		string
+	includeInvalidETLDs bool
+	ignoreSuffixes      []string
+	observation 		string
+	log         		common.Logger
+	natsHandle  		nats
+	exitCh      		chan<- common.Exit
 	pm
 }
 
@@ -35,14 +41,24 @@ type pm struct {
 
 type job struct {
 	isTick   bool
-	tickData int64
 	msg      common.NatsMsg
 }
 
 type nats interface {
 	ActivateSubscription(context.Context) (<-chan common.NatsMsg, error)
 	SetObservation(context.Context, string, string) error
+	IncrCounter(context.Context, string) error
 	Shutdown() error
+}
+
+func qtypeDistKey(date, domain, counter string) string {
+	parts := []string{date}
+	if domain == "global" { // TODO: might collide with the ".global" TLD
+		parts = append(parts, "global", counter)
+	} else {
+		parts = append(parts, libtapir.FlipDomainName(domain), counter)
+	}
+	return common.NormalizeNatsSubject(strings.Join(parts, common.NATS_DELIM))
 }
 
 func Create(conf Conf) (*appHandle, error) {
@@ -64,12 +80,15 @@ func Create(conf Conf) (*appHandle, error) {
 	}
 	a.id = conf.AnalystID
 
-	if conf.Interval > 0 {
-		a.ticker = time.NewTicker(time.Duration(conf.Interval) * time.Second)
-	} else {
-		a.ticker = time.NewTicker(time.Duration(math.MaxInt32) * time.Second)
-		a.ticker.Stop()
-		a.log.Warning("No interval set. Won't refresh list.")
+	a.includeInvalidETLDs = conf.IncludeInvalidETLDs
+	a.log.Debug("Observations will be sent out for invalid eTLDs: %t", a.includeInvalidETLDs)
+
+	for _, s := range conf.IgnoreSuffixes {
+		suf := libtapir.NormalizeDomainNameSuffix(s)
+		if suf == "" {
+			continue
+		}
+		a.ignoreSuffixes = append(a.ignoreSuffixes, suf)
 	}
 
 	a.log.Debug("Main app debug logging enabled")
@@ -77,8 +96,6 @@ func Create(conf Conf) (*appHandle, error) {
 }
 
 func (a *appHandle) Run(ctx context.Context, exitCh chan<- common.Exit) {
-	defer a.ticker.Stop()
-
 	var natsChan <-chan common.NatsMsg
 	var err error
 	a.exitCh = exitCh
@@ -104,17 +121,6 @@ func (a *appHandle) Run(ctx context.Context, exitCh chan<- common.Exit) {
 MAIN_APP_LOOP:
 	for {
 		select {
-		case t := <-a.ticker.C:
-			a.log.Debug("Tick")
-			j := job{
-				isTick:   true,
-				tickData: t.Unix(),
-			}
-			select {
-			case jobChan <- j:
-			case <-ctx.Done():
-				break MAIN_APP_LOOP
-			}
 		case natsMsg, ok := <-natsChan:
 			if !ok {
 				a.log.Warning("NATS channel closed")
@@ -151,21 +157,7 @@ MAIN_APP_LOOP:
 }
 
 func (a *appHandle) handleJob(ctx context.Context, j job) {
-	if j.isTick {
-		a.handleTick(ctx, j.tickData)
-	} else {
-		a.handleMsg(ctx, j.msg)
-	}
-}
-
-func (a *appHandle) handleTick(ctx context.Context, epoch int64) {
-	a.log.Debug("Received tick '%d'", epoch)
-	if epoch == 0 {
-		a.log.Debug("Tick had zero value, probably garbage. Won't handle...")
-		return
-	}
-
-	panic("not impl")
+	a.handleMsg(ctx, j.msg)
 }
 
 func (a *appHandle) handleMsg(ctx context.Context, msg common.NatsMsg) {
@@ -175,5 +167,56 @@ func (a *appHandle) handleMsg(ctx context.Context, msg common.NatsMsg) {
 		return
 	}
 
-	panic("not impl")
+	msgDomain, err := libtapir.ExtractDomain(msg.Data)
+	if err != nil {
+		a.log.Error("Error reading domain from message: %s", err)
+		return
+	}
+
+	msgQtype, err := libtapir.ExtractQtype(msg.Data) 
+	if err != nil {
+		a.log.Error("Error reading QTYPE from message: %s", err)
+		return
+	}
+
+	for _, s := range a.ignoreSuffixes {
+		if msgDomain == s || strings.HasSuffix(msgDomain, s) {
+			a.log.Debug("%s matches suffix %s, ignoring...", msgDomain, s)
+			return
+		}
+	}
+
+	if !a.includeInvalidETLDs && !libtapir.HasValidETLD(msgDomain) {
+		a.log.Debug("%s has invalid eTLD, ignoring", msgDomain)
+		return
+	}
+
+	// TODO: how to handle queries for "se", "global", etc.
+	domain, err := libtapir.GetETLDPlusOne(msgDomain)
+	if err != nil {
+		a.log.Error("Error reading eTLD+1 from msgDomain: %s", err)
+		return
+	}
+	qtype := strconv.FormatUint(uint64(msgQtype), 10)
+	date := time.Now().UTC().Format("2006-01-02")
+
+	// "<date>.<flipped domain>.<qtype> = counter"
+	// "<date>.<flipped domain>.total = counter"
+	// "<date>.global.<qtype> = counter"
+	// "<date>.global.total = counter"
+	// "2006-01-02.com.example.1 = 10
+	// "2006-01-02.global.1 = 100
+	for _, scope := range []string{domain, "global"} {
+		for _, counter := range []string{qtype, "total"} {
+			key := qtypeDistKey(date, scope, counter)
+			if err := a.natsHandle.IncrCounter(ctx, key); err != nil {
+				a.log.Error("Couldn't increment counter: %s", err)
+			}
+		}
+	}
+
+	// TODO: analyze distribution
+	// TODO: assign observation/tag
+
+	return
 }
