@@ -177,7 +177,7 @@ func chiSquaredTest(domain, global map[string]uint64) (stat float64, df int, p f
 	}
 
 	if len(exp) < 2 {
-		fmt.Errorf("ChiSq: len(exp) > 2: %s", len(exp))
+		fmt.Errorf("ChiSq: len(exp) > 2: %d", len(exp))
 		return 0, 0, 1, false
 	}
 
