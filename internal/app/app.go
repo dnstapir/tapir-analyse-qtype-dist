@@ -1,14 +1,14 @@
 package app
 
 import (
+	"cmp"
 	"context"
+	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
-	"math"
-	"cmp"
-	"fmt"
 
 	"github.com/dnstapir/tapir-analyse-lib/common"
 	"github.com/dnstapir/tapir-analyse-lib/libtapir"
@@ -25,35 +25,35 @@ const c_MIN_EXPECTED = 5.0 // usual rule of thumb for the chi-squared approximat
 
 // TODO: add threshold config entry
 type Conf struct {
-	Debug      			bool 		`toml:"debug"`
-	Interval   			int  		`toml:"interval"`
-	IgnoreSuffixes      []string	`toml:"ignore_suffixes"`
-	IncludeInvalidETLDs	bool        `toml:"include_invalid_etlds"`
-	DomainMinTotal 		uint64  	`toml:"domain_min_total"`
-	GlobalMinTotal 		uint64  	`toml:"global_min_total"`
-	AnalyzeEvery   		uint64  	`toml:"analyze_every"` // re-test each time the domain total is a multiple of this
-	MinTvd   			float64  	`toml:"min_tvd"` 
-	Alpha          		float64 	`toml:"alpha"`         // significance level, e.g. 0.001
-	Tag					string		`toml:"tag"`
-	AnalystID  			string
-	Log        			common.Logger
-	NatsHandle 			nats
+	Debug               bool     `toml:"debug"`
+	Interval            int      `toml:"interval"`
+	IgnoreSuffixes      []string `toml:"ignore_suffixes"`
+	IncludeInvalidETLDs bool     `toml:"include_invalid_etlds"`
+	DomainMinTotal      uint64   `toml:"domain_min_total"`
+	GlobalMinTotal      uint64   `toml:"global_min_total"`
+	AnalyzeEvery        uint64   `toml:"analyze_every"` // re-test each time the domain total is a multiple of this
+	MinTvd              float64  `toml:"min_tvd"`
+	Alpha               float64  `toml:"alpha"` // significance level, e.g. 0.001
+	Tag                 string   `toml:"tag"`
+	AnalystID           string
+	Log                 common.Logger
+	NatsHandle          nats
 }
 
 type appHandle struct {
-	id          		string
+	id                  string
 	includeInvalidETLDs bool
 	ignoreSuffixes      []string
-	domainMinTotal 		uint64  
-	globalMinTotal 		uint64  
-	analyzeEvery   		uint64  
-	minTvd   			float64  
-	alpha          		float64 
-	tag					string
-	observation 		string
-	log         		common.Logger
-	natsHandle  		nats
-	exitCh      		chan<- common.Exit
+	domainMinTotal      uint64
+	globalMinTotal      uint64
+	analyzeEvery        uint64
+	minTvd              float64
+	alpha               float64
+	tag                 string
+	observation         string
+	log                 common.Logger
+	natsHandle          nats
+	exitCh              chan<- common.Exit
 	pm
 }
 
@@ -61,8 +61,8 @@ type pm struct {
 }
 
 type job struct {
-	isTick   bool
-	msg      common.NatsMsg
+	isTick bool
+	msg    common.NatsMsg
 }
 
 type nats interface {
@@ -190,10 +190,9 @@ func chiSquaredTest(domain, global map[string]uint64) (stat float64, df int, p f
 	return stat, df, chiSquaredPValue(stat, df), true
 }
 
-
 func qtypeDistKey(date, domain, counter string) string {
 	parts := []string{date}
-	if domain == "global" { 
+	if domain == "global" {
 		parts = append(parts, "global", counter)
 	} else {
 		parts = append(parts, libtapir.FlipDomainName(domain), counter)
@@ -358,7 +357,7 @@ func (a *appHandle) handleMsg(ctx context.Context, msg common.NatsMsg) {
 		return
 	}
 
-	msgQtype, err := libtapir.ExtractQtype(msg.Data) 
+	msgQtype, err := libtapir.ExtractQtype(msg.Data)
 	if err != nil {
 		a.log.Error("Error reading QTYPE from message: %s", err)
 		return
